@@ -11,7 +11,7 @@ provider:
   stage: dev
   environment:
     KWIZIE_TABLE: ${self:custom.tableName.${self:provider.stage}}
-    OPENAI: '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'
+    OPENAI: '<OPEN AI KEY HERE>'
     OPENSEARCH: 
       Fn::GetAtt: [ OpenSearchDomain, DomainEndpoint ]
   iam:
@@ -135,7 +135,7 @@ resources:
               Condition:
                 IpAddress:
                   aws:sourceIp:
-                    - "80.221.55.84"
+                    - "<Your Ip here> "
         AdvancedOptions:
           rest.action.multi.allow_explicit_index: "true"
 
