@@ -1,0 +1,242 @@
+service: kwizie
+frameworkVersion: "3"
+custom:
+  tableName:
+    dev: 'kwizie-table-${sls:stage}'
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  region: eu-west-1
+  stage: dev
+  environment:
+    KWIZIE_TABLE: ${self:custom.tableName.${self:provider.stage}}
+    OPENAI: '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'
+    OPENSEARCH: 
+      Fn::GetAtt: [ OpenSearchDomain, DomainEndpoint ]
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+          Resource:
+            - Fn::GetAtt: [ KwizieTable, Arn ]
+        - Effect: Allow
+          Action:
+            - es:ESHttpPost
+            - es:ESHttpPut
+            - es:ESHttpDelete
+            - es:ESHttpGet
+          Resource:
+            - Fn::GetAtt: [ OpenSearchDomain, Arn ]
+
+functions:
+  create:
+    handler: api/create.create
+    events:
+      - http:
+          path: /quiz
+          method: post
+          authorizer: aws_iam
+        
+  getQuiz:
+    handler: api/getQuiz.get
+    events:
+      - http:
+          path: /quiz/{id}
+          method: get
+          authorizer: aws_iam
+
+  getQuizzes:
+    handler: api/getQuizzes.get
+    events:
+      - http:
+          path: /quizzes/{id}
+          method: get
+          authorizer: aws_iam
+        
+  update:
+    handler: api/update.update
+    events:
+      - http:
+          path: /quiz/{id}
+          method: put    
+          authorizer: aws_iam
+  
+  play:
+    handler: api/play.play
+    events:
+      - http:
+          path: /play
+          method: post
+          authorizer: aws_iam
+  
+  search:
+    handler: api/search.search
+    events:
+      - http:
+          path: /search
+          method: post
+          authorizer: aws_iam
+
+resources:
+  Resources:
+    KwizieTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: quizId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: quizId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        GlobalSecondaryIndexes:
+          - IndexName: quizIdIndex
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+            Projection:
+              NonKeyAttributes: []
+              ProjectionType: 'ALL'
+        TableName: ${self:custom.tableName.${self:provider.stage}}
+
+    OpenSearchDomain:
+      Type: AWS::OpenSearchService::Domain
+      Properties:
+        DomainName: 'example'
+        EngineVersion: 'OpenSearch_2.3'
+        ClusterConfig:
+          InstanceCount: '1'
+          InstanceType: 't3.small.search'
+        EBSOptions:
+          EBSEnabled: true
+          VolumeSize: '20'
+          VolumeType: 'gp2'
+
+        ## Attention! Before you enable this lines, check out the README to avoid an open access policy
+        AccessPolicies:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Principal:
+                AWS: "*"
+              Action: "es:*"
+              Resource: "*"
+              Condition:
+                IpAddress:
+                  aws:sourceIp:
+                    - "80.221.55.84"
+        AdvancedOptions:
+          rest.action.multi.allow_explicit_index: "true"
+
+    # Cognito - User pool
+    CognitoUserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: cognito_sls_backend_user_pool
+    # Cognito - Client
+    CognitoUserPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: cognito_sls_backend_client
+        UserPoolId:
+          Ref: CognitoUserPool
+    # Cognito - Identity
+    CognitoIdentityPool:
+      Type: AWS::Cognito::IdentityPool
+      Properties:
+        IdentityPoolName: cognito_sls_backend_identity_pool
+        AllowUnauthenticatedIdentities: false
+        CognitoIdentityProviders:
+          - ClientId:
+              Ref: CognitoUserPoolClient
+            ProviderName:
+              Fn::GetAtt: [CognitoUserPool, ProviderName]
+    # Cognito roles
+    CognitoIdentityPoolRoles:
+      Type: AWS::Cognito::IdentityPoolRoleAttachment
+      Properties:
+        IdentityPoolId:
+          Ref: CognitoIdentityPool
+        Roles:
+          authenticated:
+            Fn::GetAtt: [CognitoAuthRole, Arn]
+          unauthenticated:
+            Fn::GetAtt: [CognitoUnauthRole, Arn]
+    CognitoAuthRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: appAuthRole
+        Path: /
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Federated: "cognito-identity.amazonaws.com"
+              Action:
+                - "sts:AssumeRoleWithWebIdentity"
+              Condition:
+                StringEquals:
+                  "cognito-identity.amazonaws.com:aud":
+                    Ref: CognitoIdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.amazonaws.com:amr": authenticated
+        Policies:
+          - PolicyName: "CognitoAuthorizedPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "mobileanalytics:PutEvents"
+                    - "cognito-sync:*"
+                    - "cognito-identity:*"
+                  Resource: "*"
+                - Effect: "Allow"
+                  Action:
+                    - "execute-api:Invoke"
+                  Resource: "*"
+    CognitoUnauthRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: appUnauthRole
+        Path: /
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Federated: "cognito-identity.amazonaws.com"
+              Action:
+                - "sts:AssumeRoleWithWebIdentity"
+              Condition:
+                StringEquals:
+                  "cognito-identity.amazonaws.com:aud":
+                    Ref: CognitoIdentityPool
+                "ForAnyValue:StringLike":
+                  "cognito-identity.amazonaws.com:amr": unauthenticated
+        Policies:
+          - PolicyName: "CognitoUnauthorizedPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "mobileanalytics:PutEvents"
+                    - "cognito-sync:*"
+                    - "cognito-identity:*"
+                  Resource: "*"
+plugins:
+  - serverless-plugin-typescript
+  - serverless-offline
